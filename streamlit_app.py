@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pandas.errors import ParserError
 import zipfile
+import rarfile
 import io
 import os
 
@@ -197,31 +198,55 @@ def insert_platform_currency_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# ZIP handling
+# Archive handling (ZIP + RAR)
 # =========================
+def _is_csv_candidate(name: str) -> bool:
+    """Return True if the archive entry looks like a real CSV file."""
+    base = os.path.basename(name)
+    if not base:
+        return False
+    if base.startswith("__MACOSX") or "/__MACOSX" in name:
+        return False
+    if base.startswith("."):
+        return False
+    return base.lower().endswith(".csv")
+
+
 def extract_csv_filelikes_from_zip(zip_bytes: bytes):
-    """
-    Returns list of tuples: (display_name, file_like)
-    where file_like is a BytesIO ready for pandas.
-    """
+    """Extract CSVs from a ZIP archive."""
     csv_items = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         for info in z.infolist():
-            # Skip folders / hidden files
             if info.is_dir():
                 continue
-            name = info.filename
-            base = os.path.basename(name)
-            if not base:
-                continue
-            if base.startswith("__MACOSX") or "/__MACOSX" in name:
-                continue
-            if base.startswith("."):
-                continue
-            if base.lower().endswith(".csv"):
+            if _is_csv_candidate(info.filename):
                 data = z.read(info)
-                csv_items.append((base, io.BytesIO(data)))
+                csv_items.append((os.path.basename(info.filename), io.BytesIO(data)))
     return csv_items
+
+
+def extract_csv_filelikes_from_rar(rar_bytes: bytes):
+    """Extract CSVs from a RAR archive."""
+    csv_items = []
+    with rarfile.RarFile(io.BytesIO(rar_bytes)) as r:
+        for info in r.infolist():
+            if info.is_dir():
+                continue
+            if _is_csv_candidate(info.filename):
+                data = r.read(info)
+                csv_items.append((os.path.basename(info.filename), io.BytesIO(data)))
+    return csv_items
+
+
+def extract_csv_filelikes_from_archive(file_bytes: bytes, filename: str):
+    """Route to the correct extractor based on file extension."""
+    lower = filename.lower()
+    if lower.endswith(".zip"):
+        return extract_csv_filelikes_from_zip(file_bytes)
+    elif lower.endswith(".rar"):
+        return extract_csv_filelikes_from_rar(file_bytes)
+    else:
+        return []
 
 
 # ==========
@@ -231,7 +256,7 @@ st.set_page_config(page_title="YouTube Asset Reporter", layout="wide")
 
 st.title("📊 YouTube Asset Report Generator")
 st.markdown(
-    "Poți încărca fie până la 12 fișiere CSV, fie un singur ZIP care conține până la 12 CSV-uri."
+    "Poți încărca fie până la 12 fișiere CSV, fie unul sau mai multe arhive ZIP/RAR care conțin CSV-uri."
 )
 
 report_type = st.sidebar.radio("Select Report Type", ["Standard Report", "Red Label Report"])
@@ -247,11 +272,11 @@ uploaded_csvs = st.file_uploader(
     key="csv_multi",
 )
 
-uploaded_zips = st.file_uploader(
-    "Variant B: Upload ZIP file(s) containing CSV files",
-    type=["zip"],
+uploaded_archives = st.file_uploader(
+    "Variant B: Upload ZIP/RAR archive(s) containing CSV files",
+    type=["zip", "rar"],
     accept_multiple_files=True,
-    key="zip_multi",
+    key="archive_multi",
 )
 
 # Enforce 12 max for multi-CSV selection
@@ -262,29 +287,29 @@ if uploaded_csvs and len(uploaded_csvs) > MAX_CSV_FILES:
 # Prepare inputs list: (display_name, file_like)
 input_csv_items = []
 
-# If ZIP(s) provided, use ZIPs (recommended for the 'max 6' file-picker issue)
-if uploaded_zips:
+# If archive(s) provided, extract CSVs from all ZIP/RAR files
+if uploaded_archives:
     total_csv_count = 0
-    for zip_file in uploaded_zips:
+    for archive_file in uploaded_archives:
         try:
-            zip_bytes = zip_file.getvalue()
-            extracted = extract_csv_filelikes_from_zip(zip_bytes)
+            archive_bytes = archive_file.getvalue()
+            extracted = extract_csv_filelikes_from_archive(archive_bytes, archive_file.name)
             if not extracted:
-                st.warning(f"ZIP-ul '{zip_file.name}' nu conține niciun fișier .csv.")
+                st.warning(f"Arhiva '{archive_file.name}' nu conține niciun fișier .csv.")
                 continue
 
             total_csv_count += len(extracted)
             if total_csv_count > MAX_CSV_FILES:
-                st.error(f"Total CSV-uri din toate ZIP-urile: {total_csv_count}. Maxim permis: {MAX_CSV_FILES}.")
+                st.error(f"Total CSV-uri din toate arhivele: {total_csv_count}. Maxim permis: {MAX_CSV_FILES}.")
                 st.stop()
 
             input_csv_items.extend(extracted)
         except Exception as e:
-            st.error(f"Nu am putut citi ZIP-ul '{zip_file.name}': {e}")
+            st.error(f"Nu am putut citi arhiva '{archive_file.name}': {e}")
             st.stop()
 
     if input_csv_items:
-        st.info(f"Am găsit {len(input_csv_items)} fișiere CSV în {len(uploaded_zips)} ZIP-uri.")
+        st.info(f"Am găsit {len(input_csv_items)} fișiere CSV în {len(uploaded_archives)} arhive.")
 
 # Else use direct CSV uploads
 elif uploaded_csvs:
