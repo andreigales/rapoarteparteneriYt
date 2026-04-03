@@ -247,11 +247,11 @@ uploaded_csvs = st.file_uploader(
     key="csv_multi",
 )
 
-uploaded_zip = st.file_uploader(
-    "Variant B: Upload a ZIP containing CSV files",
+uploaded_zips = st.file_uploader(
+    "Variant B: Upload ZIP file(s) containing CSV files",
     type=["zip"],
-    accept_multiple_files=False,
-    key="zip_single",
+    accept_multiple_files=True,
+    key="zip_multi",
 )
 
 # Enforce 12 max for multi-CSV selection
@@ -262,24 +262,29 @@ if uploaded_csvs and len(uploaded_csvs) > MAX_CSV_FILES:
 # Prepare inputs list: (display_name, file_like)
 input_csv_items = []
 
-# If ZIP provided, use ZIP (recommended for the 'max 6' file-picker issue)
-if uploaded_zip is not None:
-    try:
-        zip_bytes = uploaded_zip.getvalue()
-        extracted = extract_csv_filelikes_from_zip(zip_bytes)
-        if not extracted:
-            st.error("ZIP-ul nu conține niciun fișier .csv.")
+# If ZIP(s) provided, use ZIPs (recommended for the 'max 6' file-picker issue)
+if uploaded_zips:
+    total_csv_count = 0
+    for zip_file in uploaded_zips:
+        try:
+            zip_bytes = zip_file.getvalue()
+            extracted = extract_csv_filelikes_from_zip(zip_bytes)
+            if not extracted:
+                st.warning(f"ZIP-ul '{zip_file.name}' nu conține niciun fișier .csv.")
+                continue
+
+            total_csv_count += len(extracted)
+            if total_csv_count > MAX_CSV_FILES:
+                st.error(f"Total CSV-uri din toate ZIP-urile: {total_csv_count}. Maxim permis: {MAX_CSV_FILES}.")
+                st.stop()
+
+            input_csv_items.extend(extracted)
+        except Exception as e:
+            st.error(f"Nu am putut citi ZIP-ul '{zip_file.name}': {e}")
             st.stop()
 
-        if len(extracted) > MAX_CSV_FILES:
-            st.error(f"ZIP-ul conține {len(extracted)} CSV-uri. Maxim permis: {MAX_CSV_FILES}.")
-            st.stop()
-
-        input_csv_items = extracted
-        st.info(f"Am găsit {len(input_csv_items)} fișiere CSV în ZIP.")
-    except Exception as e:
-        st.error(f"Nu am putut citi ZIP-ul: {e}")
-        st.stop()
+    if input_csv_items:
+        st.info(f"Am găsit {len(input_csv_items)} fișiere CSV în {len(uploaded_zips)} ZIP-uri.")
 
 # Else use direct CSV uploads
 elif uploaded_csvs:
