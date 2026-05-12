@@ -1,1 +1,2 @@
-unrar
+libarchive-tools
+p7zip-full
