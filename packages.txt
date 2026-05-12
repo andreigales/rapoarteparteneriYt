@@ -1,2 +1,3 @@
+unar
 libarchive-tools
 p7zip-full
