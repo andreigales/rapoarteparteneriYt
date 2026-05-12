@@ -5,13 +5,37 @@ import zipfile
 import rarfile
 import io
 import os
+import shutil
+
+# ---------------------------------------------------------------------------
+# RAR backend selection
+# ---------------------------------------------------------------------------
+# `rarfile` is a pure-Python wrapper that shells out to an external binary
+# (unrar / unar / bsdtar / 7z). On Streamlit Community Cloud `unrar` is in the
+# non-free Debian repo and cannot be installed, so we install `p7zip-full`
+# (provides `7z`) and `libarchive-tools` (provides `bsdtar`) via packages.txt
+# and point rarfile at whichever one is actually on PATH.
+def _configure_rar_backend():
+    for tool_name, attr in (
+        ("7z", "SEVENZIP_TOOL"),
+        ("7zz", "SEVENZIP2_TOOL"),
+        ("bsdtar", "BSDTAR_TOOL"),
+        ("unar", "UNAR_TOOL"),
+        ("unrar", "UNRAR_TOOL"),
+    ):
+        path = shutil.which(tool_name)
+        if path:
+            setattr(rarfile, attr, path)
+            return tool_name, path
+    return None, None
+
+RAR_BACKEND_NAME, RAR_BACKEND_PATH = _configure_rar_backend()
 
 # =========================
 # Settings (stability)
 # =========================
 MAX_CSV_FILES = 12
 CHUNK_SIZE = 200_000  # reduce (e.g. 50_000) if you still hit RAM issues
-
 
 # =========================
 # Helper: robust chunk reader
@@ -56,7 +80,6 @@ def iter_chunks_with_fallback(file_like, header=None, skiprows=0, chunksize=CHUN
     for chunk in reader2:
         yield chunk
 
-
 # =================
 # Business Helpers
 # =================
@@ -74,7 +97,6 @@ def load_asset_ids(excel_file):
     except Exception as e:
         st.error(f"Error reading Excel file: {e}")
         return set()
-
 
 def process_standard_csv(file_like, display_name, asset_ids):
     """Standard report: chunk-read, filter by asset_id column index 3, keep desired cols."""
@@ -112,7 +134,6 @@ def process_standard_csv(file_like, display_name, asset_ids):
     if not results:
         return None
     return pd.concat(results, ignore_index=True)
-
 
 def process_redlabel_csv(file_like, display_name, asset_ids):
     """Red Label report: read header names (row 2), then chunk-read data from row 3 onward."""
@@ -177,7 +198,6 @@ def process_redlabel_csv(file_like, display_name, asset_ids):
         return None
     return pd.concat(results, ignore_index=True)
 
-
 def insert_platform_currency_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     After column E (5th col) insert a column filled with 'YouTube'.
@@ -196,7 +216,6 @@ def insert_platform_currency_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 # =========================
 # Archive handling (ZIP + RAR)
 # =========================
@@ -211,7 +230,6 @@ def _is_csv_candidate(name: str) -> bool:
         return False
     return base.lower().endswith(".csv")
 
-
 def extract_csv_filelikes_from_zip(zip_bytes: bytes):
     """Extract CSVs from a ZIP archive."""
     csv_items = []
@@ -224,9 +242,13 @@ def extract_csv_filelikes_from_zip(zip_bytes: bytes):
                 csv_items.append((os.path.basename(info.filename), io.BytesIO(data)))
     return csv_items
 
-
 def extract_csv_filelikes_from_rar(rar_bytes: bytes):
     """Extract CSVs from a RAR archive."""
+    if not RAR_BACKEND_PATH:
+        raise RuntimeError(
+            "RAR backend not available on the server (no 7z/bsdtar/unar/unrar binary on PATH). "
+            "Check packages.txt."
+        )
     csv_items = []
     with rarfile.RarFile(io.BytesIO(rar_bytes)) as r:
         for info in r.infolist():
@@ -236,7 +258,6 @@ def extract_csv_filelikes_from_rar(rar_bytes: bytes):
                 data = r.read(info)
                 csv_items.append((os.path.basename(info.filename), io.BytesIO(data)))
     return csv_items
-
 
 def extract_csv_filelikes_from_archive(file_bytes: bytes, filename: str):
     """Route to the correct extractor based on file extension."""
@@ -248,16 +269,21 @@ def extract_csv_filelikes_from_archive(file_bytes: bytes, filename: str):
     else:
         return []
 
-
 # ==========
 # Main UI
 # ==========
 st.set_page_config(page_title="YouTube Asset Reporter", layout="wide")
 
-st.title("📊 YouTube Asset Report Generator")
+st.title("YouTube Asset Report Generator")
 st.markdown(
-    "Poți încărca fie până la 12 fișiere CSV, fie unul sau mai multe arhive ZIP/RAR care conțin CSV-uri."
+    "Poti incarca fie pana la 12 fisiere CSV, fie una sau mai multe arhive ZIP/RAR care contin CSV-uri."
 )
+
+# Show a small footer indicator of which RAR backend is active.
+if RAR_BACKEND_NAME:
+    st.caption(f"RAR backend: {RAR_BACKEND_NAME} ({RAR_BACKEND_PATH})")
+else:
+    st.caption("RAR backend: NOT AVAILABLE — only ZIP and direct CSV will work.")
 
 report_type = st.sidebar.radio("Select Report Type", ["Standard Report", "Red Label Report"])
 
@@ -281,7 +307,7 @@ uploaded_archives = st.file_uploader(
 
 # Enforce 12 max for multi-CSV selection
 if uploaded_csvs and len(uploaded_csvs) > MAX_CSV_FILES:
-    st.error(f"Poți încărca maxim {MAX_CSV_FILES} fișiere CSV. Ai selectat {len(uploaded_csvs)}.")
+    st.error(f"Poti incarca maxim {MAX_CSV_FILES} fisiere CSV. Ai selectat {len(uploaded_csvs)}.")
     st.stop()
 
 # Prepare inputs list: (display_name, file_like)
@@ -295,7 +321,7 @@ if uploaded_archives:
             archive_bytes = archive_file.getvalue()
             extracted = extract_csv_filelikes_from_archive(archive_bytes, archive_file.name)
             if not extracted:
-                st.warning(f"Arhiva '{archive_file.name}' nu conține niciun fișier .csv.")
+                st.warning(f"Arhiva '{archive_file.name}' nu contine niciun fisier .csv.")
                 continue
 
             total_csv_count += len(extracted)
@@ -309,7 +335,7 @@ if uploaded_archives:
             st.stop()
 
     if input_csv_items:
-        st.info(f"Am găsit {len(input_csv_items)} fișiere CSV în {len(uploaded_archives)} arhive.")
+        st.info(f"Am gasit {len(input_csv_items)} fisiere CSV in {len(uploaded_archives)} arhive.")
 
 # Else use direct CSV uploads
 elif uploaded_csvs:
@@ -323,7 +349,7 @@ if st.button("Generate Report"):
         st.stop()
 
     if not input_csv_items:
-        st.error("Te rog încarcă fie CSV-uri, fie un ZIP cu CSV-uri.")
+        st.error("Te rog incarca fie CSV-uri, fie un ZIP/RAR cu CSV-uri.")
         st.stop()
 
     with st.spinner("Processing files..."):
@@ -331,7 +357,7 @@ if st.button("Generate Report"):
         st.success(f"Loaded {len(asset_ids)} asset IDs.")
 
         if not asset_ids:
-            st.error("Lista de asset IDs este goală (sau nu a putut fi citită).")
+            st.error("Lista de asset IDs este goala (sau nu a putut fi citita).")
             st.stop()
 
         all_results = []
@@ -368,7 +394,7 @@ if st.button("Generate Report"):
 
         csv_bytes = final_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            label="📥 Download Final Report CSV",
+            label="Download Final Report CSV",
             data=csv_bytes,
             file_name=f"report_{report_type.replace(' ', '_').lower()}.csv",
             mime="text/csv",
